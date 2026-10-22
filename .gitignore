@@ -5,5 +5,6 @@ build/
 *.zip
 .env
 .env.*
+__pycache__/
 *.p12
 *.mobileprovision

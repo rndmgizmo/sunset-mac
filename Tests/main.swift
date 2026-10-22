@@ -1,4 +1,5 @@
 import Foundation
+import CoreServices
 
 func hex(_ data: Data) -> String { data.map { String(format: "%02x", $0) }.joined() }
 
@@ -18,4 +19,11 @@ precondition(clamped[10] == 100 && clamped[11] == 1)
 precondition(ConnectionTiming.retryDelay(afterFailures: 0) == 0)
 let repeatedFailures = (0..<10).map { ConnectionTiming.retryDelay(afterFailures: $0) }
 precondition(repeatedFailures == [0, 1, 2, 4, 8, 8, 8, 8, 8, 8])
-print("Checks passed: AES vectors, frame format, off, input limits, invalid notifications, immediate reconnect, bounded error backoff.")
+// Normal Quit must keep Bluetooth alive, but explicit Quit and logout must finish.
+precondition(!TerminationPolicy.shouldTerminate(explicitQuit: false, systemReason: nil))
+precondition(!TerminationPolicy.shouldTerminate(explicitQuit: false, systemReason: 0))
+precondition(TerminationPolicy.shouldTerminate(explicitQuit: true, systemReason: nil))
+for reason in [kAEQuitAll, kAEShutDown, kAERestart, kAELogOut, kAEReallyLogOut] {
+    precondition(TerminationPolicy.shouldTerminate(explicitQuit: false, systemReason: reason))
+}
+print("Checks passed: protocol, reconnect timing, background quit, explicit quit, system logout/restart/shutdown.")

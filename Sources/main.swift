@@ -1,4 +1,5 @@
 import AppKit
+import CoreServices
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
@@ -10,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var controlledItems: [NSMenuItem] = []
     private var lamp: BluetoothLamp!
     private var lampWindow: LampWindowController!
+    private var explicitQuit = false
     private var red: UInt8 = 255
     private var green: UInt8 = 80
     private var blue: UInt8 = 8
@@ -58,7 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         refresh()
-        lampWindow.present()
+        showWindow()
     }
 
     private func buildApplicationMenu() {
@@ -69,7 +71,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Sunset ausblenden", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Sunset beenden", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let background = NSMenuItem(title: "Sunset beenden", action: #selector(quit), keyEquivalent: "q")
+        background.target = self
+        appMenu.addItem(background)
+        let fullQuit = NSMenuItem(title: "Vollständig beenden", action: #selector(quitCompletely), keyEquivalent: "q")
+        fullQuit.keyEquivalentModifierMask = [.command, .option]
+        fullQuit.target = self
+        appMenu.addItem(fullQuit)
         appItem.submenu = appMenu
         mainMenu.addItem(appItem)
 
@@ -113,10 +121,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         lampWindow.onDisconnect = { [weak self] in self?.disconnect() }
     }
 
-    @objc private func showWindow() { lampWindow.present() }
+    @objc private func showWindow() {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.unhide(nil)
+        lampWindow.present()
+        lamp?.log("Foreground mode: window open; Dock visible")
+    }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        lampWindow.present()
+        showWindow()
         return true
     }
 
@@ -193,7 +206,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         disconnect.toolTip = "Gibt die Bluetooth-Verbindung für die iPhone-App frei. Die Lampe leuchtet weiter."
         disconnect.target = self; menu.addItem(disconnect)
         menu.addItem(.separator())
-        let quit = NSMenuItem(title: "Sunset beenden", action: #selector(quit), keyEquivalent: "q")
+        let background = NSMenuItem(title: "Fenster und Dock ausblenden", action: #selector(quit), keyEquivalent: "q")
+        background.target = self; menu.addItem(background)
+        let quit = NSMenuItem(title: "Vollständig beenden", action: #selector(quitCompletely), keyEquivalent: "q")
+        quit.keyEquivalentModifierMask = [.command, .option]
         quit.target = self; menu.addItem(quit)
     }
 
@@ -318,6 +334,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     @objc private func disconnect() { delayedSend?.cancel(); lamp.stop() }
     @objc private func quit() { NSApp.terminate(nil) }
+
+    @objc private func quitCompletely() {
+        explicitQuit = true
+        NSApp.terminate(nil)
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let event = NSAppleEventManager.shared().currentAppleEvent
+        let reason = (event?.attributeDescriptor(forKeyword: AEKeyword(kAEQuitReason))
+                      ?? event?.paramDescriptor(forKeyword: AEKeyword(kAEQuitReason)))?.enumCodeValue
+        if TerminationPolicy.shouldTerminate(explicitQuit: explicitQuit, systemReason: reason) {
+            return .terminateNow
+        }
+        for window in sender.windows { window.orderOut(nil) }
+        sender.hide(nil)
+        sender.setActivationPolicy(.accessory)
+        lamp.log("Background mode: window hidden; accessory=\(sender.activationPolicy() == .accessory); Bluetooth remains active")
+        return .terminateCancel
+    }
     func applicationWillTerminate(_ notification: Notification) {
         delayedSend?.cancel(); lamp.stop()
         if colorPanelOpen { NSColorPanel.shared.close() }

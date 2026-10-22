@@ -178,7 +178,7 @@ final class LampWindowController: NSWindowController {
         disconnect.toolTip = "Trennt die Bluetooth-Verbindung. Die Lampe leuchtet weiter."
         let connections = row([connect, NSView(), disconnect])
         root.addArrangedSubview(connections)
-        let hint = label("Beim Schließen bleibt Sunset in der Menüleiste aktiv.", size: 11)
+        let hint = label("Auch mit ⌘Q bleibt Sunset in der Menüleiste aktiv.", size: 11)
         hint.textColor = .tertiaryLabelColor
         root.addArrangedSubview(hint)
 

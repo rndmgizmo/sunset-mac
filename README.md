@@ -6,7 +6,9 @@ Lokale macOS-App mit eigenem Fenster, Dock-Symbol und zusätzlicher Menüleisten
 
 Die installierte App befindet sich unter **Programme → Sunset** (`/Applications/Sunset.app`). Doppelklicken öffnet das Steuerfenster. Beim ersten Start gegebenenfalls Bluetooth erlauben. Alternativ kann die lokal gebaute Version unter `build/Sunset.app` gestartet werden.
 
-Sunset besitzt ein eigenes App-Symbol und erscheint im Dock sowie zusätzlich als Sonnenuntergang-Symbol in der Menüleiste. Schließen des Fensters lässt die Bluetooth-Steuerung weiterlaufen. Ein erneuter Aufruf aus Programme, über das Dock oder „Sunset öffnen …“ in der Menüleiste öffnet das Fenster wieder. Mit **⌘Q** wird Sunset vollständig beendet.
+Sunset besitzt ein eigenes App-Symbol und erscheint im Dock sowie zusätzlich als Sonnenuntergang-Symbol in der Menüleiste. Schließen des Fensters lässt die Bluetooth-Steuerung weiterlaufen. **⌘Q**, „Sunset beenden“ und „Beenden“ im Dock blenden Fenster und Dock-Symbol aus; die App bleibt mit ihrer Bluetooth-Verbindung in der Menüleiste aktiv. Ein erneuter Aufruf aus Programme oder „Sunset öffnen …“ in der Menüleiste öffnet das Fenster und zeigt das Dock-Symbol wieder.
+
+Nur **„Vollständig beenden“** (in der Menüleiste oder im App-Menü, **⌥⌘Q**) beendet den Prozess und trennt Bluetooth. Beim Abmelden, Ausschalten oder Neustarten darf macOS die App weiterhin regulär beenden.
 
 - An/Aus, sechs Farbpresets, freie Farbauswahl und Helligkeit von 1–100 %.
 - Unter „Sanfte Farbwechsel“ stehen zwei langsame Überblendungen bereit.
@@ -15,7 +17,7 @@ Sunset besitzt ein eigenes App-Symbol und erscheint im Dock sowie zusätzlich al
 - Die iPhone-App muss für die Mac-Verbindung vollständig geschlossen sein. Bei Verbindungsabbruch versucht Sunset automatisch, sich erneut zu verbinden. Nicht gesendete Befehle werden bei einem Fehler verworfen.
 - Version 1.1 verbindet sich nach einem einzelnen Abbruch sofort erneut. Eine laufende Verbindungssuche zur bekannten Lampe bleibt beim Bluetooth-System angemeldet, statt alle 20 Sekunden abgebrochen zu werden. „Erneut verbinden“ behält eine gesunde Verbindung bei; ein ausdrücklich angeforderter Neuaufbau setzt direkt nach dem Trennen fort. Nur wiederholte tatsächliche Verbindungsfehler führen zu einer wachsenden Pause von höchstens acht Sekunden.
 
-Die App benötigt weder Internet noch Home Assistant. Es wird kein automatischer Systemstart eingerichtet. Beim Beenden bleibt die Lampe in ihrer aktuellen Einstellung.
+Die Lampensteuerung benötigt weder Internet noch Home Assistant. Es wird kein automatischer Systemstart eingerichtet. Auch beim vollständigen Beenden bleibt die Lampe in ihrer aktuellen Einstellung.
 
 ## Bauen
 
@@ -28,9 +30,30 @@ zsh build.sh
 Protokollprüfungen:
 
 ```sh
-swiftc -module-cache-path /tmp/sunset-swift-module-cache Sources/LampProtocol.swift Sources/ConnectionTiming.swift Tests/main.swift -o /tmp/sunset-protocol-tests
-/tmp/sunset-protocol-tests
+zsh test.sh
 ```
+
+## Repository und Updates
+
+Privates Repository: [rndmgizmo/sunset-mac](https://github.com/rndmgizmo/sunset-mac). Der Hauptbranch heißt `main`. Die bisherige Version ist als `v1.2.0` gesichert.
+
+Den neuesten Stand aus Git holen, prüfen, bauen und nach Programme installieren:
+
+```sh
+zsh update.sh
+```
+
+Lokale Änderungen installieren, ohne vorher von GitHub zu laden:
+
+```sh
+zsh install.sh
+```
+
+Der Installer prüft das neue App-Bundle vor dem Austausch, beendet ausschließlich die laufenden Sunset-Prozesse und sichert die vorherige Version unter `build/backups/`. Bei einem Fehler beim Austausch wird die alte Version wiederhergestellt. Die gespeicherten Farben und die Bluetooth-Freigabe verwenden weiterhin dieselbe App-ID. Der Update-Befehl verweigert einen Pull bei ungesicherten Änderungen und erlaubt ausschließlich Fast-forward-Updates auf `main`.
+
+`zsh release.sh` erzeugt ein ZIP mit Architektur und Version im Namen sowie eine SHA-256-Prüfsumme. GitHub Actions prüft und baut Änderungen auf `main` und Pull Requests. Ein gepushter Tag im Format `v1.3.0`, passend zur Version in `Info.plist`, erstellt automatisch ein Release im privaten Repository mit dem App-Archiv. Tag und App-Version müssen übereinstimmen.
+
+Die Pakete werden ad-hoc signiert. Developer-ID-Notarisierung und automatische Updates direkt innerhalb der App sind noch nicht eingerichtet.
 
 ## Protokoll und Prüfung am Gerät
 

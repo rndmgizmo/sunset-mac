@@ -39,7 +39,7 @@ jobs:
         with:
           name: Sunset-macOS
           path: release
-      - name: Publish private repository release
+      - name: Publish repository release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

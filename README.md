@@ -35,7 +35,7 @@ zsh test.sh
 
 ## Repository und Updates
 
-Privates Repository: [rndmgizmo/sunset-mac](https://github.com/rndmgizmo/sunset-mac). Der Hauptbranch heißt `main`. Die bisherige Version ist als `v1.2.0` gesichert.
+Öffentliches Repository: [rndmgizmo/sunset-mac](https://github.com/rndmgizmo/sunset-mac). Der Hauptbranch heißt `main`. Die bisherige Version ist als `v1.2.0` gesichert.
 
 Den neuesten Stand aus Git holen, prüfen, bauen und nach Programme installieren:
 
@@ -51,7 +51,7 @@ zsh install.sh
 
 Der Installer prüft das neue App-Bundle vor dem Austausch, beendet ausschließlich die laufenden Sunset-Prozesse und sichert die vorherige Version unter `build/backups/`. Bei einem Fehler beim Austausch wird die alte Version wiederhergestellt. Die gespeicherten Farben und die Bluetooth-Freigabe verwenden weiterhin dieselbe App-ID. Der Update-Befehl verweigert einen Pull bei ungesicherten Änderungen und erlaubt ausschließlich Fast-forward-Updates auf `main`.
 
-`zsh release.sh` erzeugt ein ZIP mit Architektur und Version im Namen sowie eine SHA-256-Prüfsumme. GitHub Actions prüft und baut Änderungen auf `main` und Pull Requests. Ein gepushter Tag im Format `v1.3.0`, passend zur Version in `Info.plist`, erstellt automatisch ein Release im privaten Repository mit dem App-Archiv. Tag und App-Version müssen übereinstimmen.
+`zsh release.sh` erzeugt ein ZIP mit Architektur und Version im Namen sowie eine SHA-256-Prüfsumme. GitHub Actions prüft und baut Änderungen auf `main` und Pull Requests. Ein gepushter Tag im Format `v1.3.0`, passend zur Version in `Info.plist`, erstellt automatisch ein öffentliches Release mit dem App-Archiv. Tag und App-Version müssen übereinstimmen.
 
 Die Pakete werden ad-hoc signiert. Developer-ID-Notarisierung und automatische Updates direkt innerhalb der App sind noch nicht eingerichtet.
 

@@ -26,18 +26,25 @@ final class BluetoothLamp: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
     var onState: (([UInt8]) -> Void)?
     var onReady: (() -> Void)?
     private var handshakeSent = false
+    private var unsuccessfulScans = 0
     private let logURL = URL(fileURLWithPath: "/tmp/sunsetmac.log")
+    let logLevel: LogLevel
 
-    override init() {
+    init(logLevel: LogLevel) {
+        self.logLevel = logLevel
         super.init()
-        try? Data().write(to: logURL)
+        if logLevel > .off { try? Data().write(to: logURL) }
         central = CBCentralManager(delegate: self, queue: .main)
     }
 
-    func log(_ message: String) {
-        guard let file = try? FileHandle(forWritingTo: logURL) else { return }
+    // Writes happen only on connection events, never periodically.
+    func log(_ message: String, level: LogLevel = .basic) {
+        guard level <= logLevel, logLevel > .off,
+              let file = try? FileHandle(forWritingTo: logURL) else { return }
         defer { try? file.close() }
-        _ = try? file.seekToEnd()
+        if let size = try? file.seekToEnd(), LogLevel.shouldTruncate(fileSize: size) {
+            try? file.truncate(atOffset: 0)
+        }
         try? file.write(contentsOf: Data(("\(Date()): \(message)\n").utf8))
     }
 
@@ -60,6 +67,7 @@ final class BluetoothLamp: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
         pending = nil
         replacement = nil
         consecutiveFailures = 0
+        unsuccessfulScans = 0
         resetConnection()
         if let peripheral, peripheral.state != .disconnected {
             restartAfterDisconnect = true
@@ -90,7 +98,7 @@ final class BluetoothLamp: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
               peripheral.canSendWriteWithoutResponse, let data = pending else { return }
         pending = nil
         peripheral.writeValue(data, for: characteristic, type: .withoutResponse)
-        log("TX RGB: \(data.map { String(format: "%02x", $0) }.joined())")
+        log("TX RGB: \(data.map { String(format: "%02x", $0) }.joined())", level: .verbose)
     }
 
     private func resetConnection() {
@@ -131,13 +139,22 @@ final class BluetoothLamp: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
                 return
             }
             self.central.stopScan()
-            self.update("Lampe nicht erreichbar · iPhone-App schließen")
             if let peripheral = self.peripheral, peripheral.state != .disconnected {
+                self.update("Lampe nicht erreichbar · iPhone-App schließen")
                 self.central.cancelPeripheralConnection(peripheral)
-            } else { self.scheduleRetry() }
+                return
+            }
+            self.unsuccessfulScans += 1
+            if ConnectionTiming.shouldScanAgain(afterUnsuccessfulScans: self.unsuccessfulScans) {
+                self.update("Lampe nicht erreichbar · iPhone-App schließen")
+                self.scheduleRetry()
+            } else {
+                // Stop searching the radio for an absent lamp; the menu offers a new attempt.
+                self.update("Lampe nicht gefunden · „Erneut verbinden“ wählen")
+            }
         }
         timeout = task
-        DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: task)
+        DispatchQueue.main.asyncAfter(deadline: .now() + ConnectionTiming.scanDuration, execute: task)
     }
 
     private func scheduleRetry() {
@@ -145,7 +162,7 @@ final class BluetoothLamp: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
         retry?.cancel()
         let delay = ConnectionTiming.retryDelay(afterFailures: consecutiveFailures)
         consecutiveFailures += 1
-        log(String(format: "Retry in %.2f s", delay))
+        log(String(format: "Retry in %.2f s", delay), level: .verbose)
         let task = DispatchWorkItem { [weak self] in self?.find() }
         retry = task
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: task)
@@ -171,7 +188,7 @@ final class BluetoothLamp: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
 
     private func startFallbackScan() {
         guard !stopped, !ready, central.state == .poweredOn, !central.isScanning else { return }
-        log("Checking for a changed Bluetooth identifier")
+        log("Checking for a changed Bluetooth identifier", level: .verbose)
         central.scanForPeripherals(withServices: nil)
         let end = DispatchWorkItem { [weak self] in self?.central.stopScan() }
         scanEnd?.cancel(); scanEnd = end
@@ -185,7 +202,7 @@ final class BluetoothLamp: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
             resetConnection()
         }
         switch central.state {
-        case .poweredOn: find()
+        case .poweredOn: unsuccessfulScans = 0; find()
         case .poweredOff: update("Bluetooth ist ausgeschaltet")
         case .unauthorized: update("Bluetooth-Zugriff in den Systemeinstellungen erlauben")
         case .unsupported: update("Bluetooth LE wird nicht unterstützt")
@@ -206,7 +223,7 @@ final class BluetoothLamp: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
             central.cancelPeripheralConnection(current)
             return
         }
-        log("Found \(name), RSSI \(RSSI)")
+        log("Found \(name), RSSI \(RSSI)", level: .verbose)
         connect(device)
     }
 
@@ -283,7 +300,7 @@ final class BluetoothLamp: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
         guard peripheral.canSendWriteWithoutResponse else { return }
         handshakeSent = true
         peripheral.writeValue(LampProtocol.join(), for: characteristic, type: .withoutResponse)
-        log("TX JOIN")
+        log("TX JOIN", level: .verbose)
         let fallback = DispatchWorkItem { [weak self] in self?.markReady() }
         handshakeFallback = fallback
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: fallback)
@@ -294,6 +311,7 @@ final class BluetoothLamp: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
         handshakeFallback?.cancel(); timeout?.cancel()
         ready = true
         consecutiveFailures = 0
+        unsuccessfulScans = 0
         if let start = connectionStarted {
             log(String(format: "READY in %.3f s", ProcessInfo.processInfo.systemUptime - start))
         }
@@ -308,8 +326,8 @@ final class BluetoothLamp: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         guard error == nil, let data = characteristic.value, let bytes = LampProtocol.decrypt(data) else { return }
-        log("RX: \(bytes.map { String(format: "%02x", $0) }.joined())")
-        if bytes[4] == 1 { log("JOIN confirmed by lamp"); markReady() }
+        log("RX: \(bytes.map { String(format: "%02x", $0) }.joined())", level: .verbose)
+        if bytes[4] == 1 { log("JOIN confirmed by lamp", level: .verbose); markReady() }
         if bytes[4] == 2 { onState?(bytes) }
     }
 }

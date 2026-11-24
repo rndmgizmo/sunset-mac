@@ -26,7 +26,7 @@ def verify(app):
 
 
 def stop_existing(executables):
-    # Signals are deliberate: ordinary Quit now keeps Sunset running in the menu bar.
+    # SIGTERM ends only Sunset; the lamp keeps its current light.
     lines = subprocess.check_output(["/bin/ps", "-axo", "pid=,command="], text=True).splitlines()
     pids = []
     for line in lines:

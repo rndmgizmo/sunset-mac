@@ -1,17 +1,19 @@
 import AppKit
-import CoreServices
 
+// Sunset lives only in the menu bar (LSUIElement): no Dock icon, no app menu, no window.
+// The menu is built the first time it opens; the system color panel loads only on request.
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let menu = NSMenu()
-    private let connectionItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-    private let powerItem = NSMenuItem(title: "Einschalten", action: #selector(togglePower), keyEquivalent: "")
-    private let brightnessText = NSTextField(labelWithString: "Helligkeit")
-    private let slider = NSSlider(value: 40, minValue: 1, maxValue: 100, target: nil, action: nil)
+    private var connectionItem: NSMenuItem?
+    private var powerItem: NSMenuItem?
+    private var brightnessText: NSTextField?
+    private var slider: NSSlider?
+    private var presetItems: [NSMenuItem] = []
+    private var customItem: NSMenuItem?
+    private var effectItems: [NSMenuItem] = []
     private var controlledItems: [NSMenuItem] = []
     private var lamp: BluetoothLamp!
-    private var lampWindow: LampWindowController!
-    private var explicitQuit = false
     private var red: UInt8 = 255
     private var green: UInt8 = 80
     private var blue: UInt8 = 8
@@ -25,219 +27,168 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var runOrangeTest = CommandLine.arguments.contains("--test-orange")
     private var reconnectChecksRemaining = CommandLine.arguments.contains("--test-reconnect") ? 2 : 0
     private let defaults = UserDefaults.standard
-    private let presets: [(String, UInt8, UInt8, UInt8)] = [
-        ("Sunset", 255, 80, 8), ("Gold", 255, 170, 32),
-        ("Rosé", 255, 36, 100), ("Violett", 130, 40, 255),
-        ("Ozean", 20, 100, 255), ("Warmweiß", 255, 210, 160)
-    ]
+    private let presets = LampPresentation.presets
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let values = defaults.array(forKey: "lastRGB") as? [Int], values.count == 3 {
             red = UInt8(clamping: values[0]); green = UInt8(clamping: values[1]); blue = UInt8(clamping: values[2])
         }
         if defaults.object(forKey: "brightness") != nil { brightness = max(1, min(100, defaults.integer(forKey: "brightness"))) }
-        buildMenu()
-        buildApplicationMenu()
-        buildWindow()
-        lamp = BluetoothLamp()
-        lamp.onChange = { [weak self] in self?.refresh() }
-        lamp.onState = { [weak self] bytes in self?.receive(bytes) }
-        lamp.onReady = { [weak self] in
-            guard let self else { return }
-            if self.runOrangeTest {
-                self.runOrangeTest = false
-                self.red = 255; self.green = 80; self.blue = 8
-                self.brightness = 40; self.mode = 0; self.speed = 100
-                self.applyColor()
-            }
-            if self.reconnectChecksRemaining > 0 {
-                self.reconnectChecksRemaining -= 1
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { [weak self] in
-                    guard let self, self.lamp.ready else { return }
-                    self.lamp.log("CHECK: manual reconnect")
-                    self.lamp.reconnect(force: true)
-                }
-            }
-        }
-        refresh()
-        showWindow()
-    }
-
-    private func buildApplicationMenu() {
-        let mainMenu = NSMenu()
-        let appItem = NSMenuItem()
-        let appMenu = NSMenu(title: "Sunset")
-        appMenu.addItem(withTitle: "Über Sunset", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
-        appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Sunset ausblenden", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
-        appMenu.addItem(.separator())
-        let background = NSMenuItem(title: "Sunset beenden", action: #selector(quit), keyEquivalent: "q")
-        background.target = self
-        appMenu.addItem(background)
-        let fullQuit = NSMenuItem(title: "Vollständig beenden", action: #selector(quitCompletely), keyEquivalent: "q")
-        fullQuit.keyEquivalentModifierMask = [.command, .option]
-        fullQuit.target = self
-        appMenu.addItem(fullQuit)
-        appItem.submenu = appMenu
-        mainMenu.addItem(appItem)
-
-        let editItem = NSMenuItem()
-        let editMenu = NSMenu(title: "Bearbeiten")
-        editMenu.addItem(withTitle: "Widerrufen", action: Selector(("undo:")), keyEquivalent: "z")
-        editMenu.addItem(.separator())
-        editMenu.addItem(withTitle: "Ausschneiden", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-        editMenu.addItem(withTitle: "Kopieren", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        editMenu.addItem(withTitle: "Einsetzen", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-        editMenu.addItem(withTitle: "Alles auswählen", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
-        editItem.submenu = editMenu
-        mainMenu.addItem(editItem)
-
-        let windowItem = NSMenuItem()
-        let windowMenu = NSMenu(title: "Fenster")
-        let show = NSMenuItem(title: "Sunset öffnen", action: #selector(showWindow), keyEquivalent: "0")
-        show.target = self; windowMenu.addItem(show)
-        windowMenu.addItem(withTitle: "Minimieren", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
-        windowMenu.addItem(withTitle: "Schließen", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
-        windowItem.submenu = windowMenu
-        mainMenu.addItem(windowItem)
-        NSApp.mainMenu = mainMenu
-        NSApp.windowsMenu = windowMenu
-    }
-
-    private func buildWindow() {
-        lampWindow = LampWindowController(presets: presets)
-        lampWindow.onPower = { [weak self] in self?.togglePower() }
-        lampWindow.onBrightness = { [weak self] value in self?.setBrightness(value) }
-        lampWindow.onPreset = { [weak self] index in self?.choosePreset(index) }
-        lampWindow.onCustomColor = { [weak self] in self?.showColors() }
-        lampWindow.onEffect = { [weak self] index in
-            guard let self else { return }
-            self.delayedSend?.cancel()
-            self.mode = UInt8(index)
-            self.speed = index == 0 ? 100 : 1
-            self.applyColor()
-        }
-        lampWindow.onReconnect = { [weak self] in self?.reconnect() }
-        lampWindow.onDisconnect = { [weak self] in self?.disconnect() }
-    }
-
-    @objc private func showWindow() {
-        NSApp.setActivationPolicy(.regular)
-        NSApp.unhide(nil)
-        lampWindow.present()
-        lamp?.log("Foreground mode: window open; Dock visible")
-    }
-
-    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        showWindow()
-        return true
-    }
-
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
-
-    private func buildMenu() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "sun.horizon.fill", accessibilityDescription: "Sunset-Lampe")
         statusItem.button?.image?.isTemplate = true
-        statusItem.button?.toolTip = "Sunset · \(BluetoothLamp.name)"
-        statusItem.menu = menu
         menu.autoenablesItems = false
         menu.delegate = self
+        statusItem.menu = menu
 
-        let show = NSMenuItem(title: "Sunset öffnen …", action: #selector(showWindow), keyEquivalent: "")
-        show.target = self
-        menu.addItem(show)
+        let level = LogLevel.resolve(arguments: CommandLine.arguments, stored: defaults.string(forKey: "logLevel"))
+        lamp = BluetoothLamp(logLevel: level)
+        lamp.onChange = { [weak self] in self?.refresh() }
+        lamp.onState = { [weak self] bytes in self?.receive(bytes) }
+        lamp.onReady = { [weak self] in self?.runChecks() }
+        refresh()
+        if CommandLine.arguments.contains("--test-menu") {
+            // Opens the menu once and closes it again; changes nothing on the lamp.
+            // Run-loop timers, not GCD: menu tracking inside a main-queue block would
+            // stall the main queue (and Bluetooth callbacks) until the menu closes.
+            let close = Timer(timeInterval: 8, repeats: false) { [weak self] _ in self?.menu.cancelTracking() }
+            let open = Timer(timeInterval: 5, repeats: false) { [weak self] _ in self?.statusItem.button?.performClick(nil) }
+            RunLoop.main.add(close, forMode: .common)
+            RunLoop.main.add(open, forMode: .common)
+        }
+    }
+
+    // Opening Sunset again from Programme shows the menu instead of doing nothing.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        statusItem.button?.performClick(nil)
+        return false
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // Only the Bluetooth link is released; the lamp keeps its current light.
+        delayedSend?.cancel(); lamp.stop()
+        if colorPanelOpen { NSColorPanel.shared.close() }
+    }
+
+    private func runChecks() {
+        if runOrangeTest {
+            runOrangeTest = false
+            red = 255; green = 80; blue = 8
+            brightness = 40; mode = 0; speed = 100
+            applyColor()
+        }
+        if reconnectChecksRemaining > 0 {
+            reconnectChecksRemaining -= 1
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { [weak self] in
+                guard let self, self.lamp.ready else { return }
+                self.lamp.log("CHECK: manual reconnect")
+                self.lamp.reconnect(force: true)
+            }
+        }
+    }
+
+    // MARK: Menu
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === self.menu && menu.items.isEmpty { buildMenu() }
+        refresh()
+    }
+
+    private func addItem(_ title: String, _ action: Selector?, to target: NSMenu? = nil, key: String = "") -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+        item.target = action == nil ? nil : self
+        item.isEnabled = action != nil
+        (target ?? menu).addItem(item)
+        return item
+    }
+
+    private func buildMenu() {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+        let title = addItem("Sunset", nil)
+        title.attributedTitle = NSAttributedString(string: "Sunset \(version)", attributes: [.font: NSFont.boldSystemFont(ofSize: 13)])
+        _ = addItem(BluetoothLamp.name, nil)
+        connectionItem = addItem("", nil)
         menu.addItem(.separator())
 
-        let title = NSMenuItem(title: "Sunset", action: nil, keyEquivalent: "")
-        title.attributedTitle = NSAttributedString(string: "Sunset", attributes: [.font: NSFont.boldSystemFont(ofSize: 14)])
-        title.isEnabled = false
-        menu.addItem(title)
-        let device = NSMenuItem(title: BluetoothLamp.name, action: nil, keyEquivalent: "")
-        device.isEnabled = false
-        menu.addItem(device)
-        connectionItem.isEnabled = false
-        menu.addItem(connectionItem)
-        menu.addItem(.separator())
+        let power = addItem("Einschalten", #selector(togglePower))
+        powerItem = power; controlledItems.append(power)
 
-        powerItem.target = self
-        menu.addItem(powerItem)
-        controlledItems.append(powerItem)
-
-        let sliderView = NSView(frame: NSRect(x: 0, y: 0, width: 290, height: 62))
-        brightnessText.frame = NSRect(x: 20, y: 36, width: 250, height: 18)
-        brightnessText.font = .systemFont(ofSize: 12)
-        slider.frame = NSRect(x: 18, y: 9, width: 254, height: 22)
-        slider.target = self; slider.action = #selector(changeBrightness)
-        slider.isContinuous = true
-        slider.setAccessibilityLabel("Helligkeit in Prozent")
-        sliderView.addSubview(brightnessText); sliderView.addSubview(slider)
+        let sliderView = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 50))
+        let text = NSTextField(labelWithString: "")
+        text.frame = NSRect(x: 20, y: 28, width: 220, height: 16)
+        text.font = .menuFont(ofSize: 12)
+        text.textColor = .secondaryLabelColor
+        let control = NSSlider(value: Double(brightness), minValue: 1, maxValue: 100, target: self, action: #selector(changeBrightness))
+        control.frame = NSRect(x: 18, y: 4, width: 224, height: 22)
+        control.isContinuous = true
+        control.setAccessibilityLabel("Helligkeit in Prozent")
+        sliderView.addSubview(text); sliderView.addSubview(control)
         let sliderItem = NSMenuItem()
         sliderItem.view = sliderView
         menu.addItem(sliderItem)
+        brightnessText = text; slider = control
         menu.addItem(.separator())
 
         for (index, preset) in presets.enumerated() {
-            let item = NSMenuItem(title: preset.0, action: #selector(selectPreset(_:)), keyEquivalent: "")
-            item.target = self; item.tag = index
-            item.image = swatch(preset.1, preset.2, preset.3)
-            menu.addItem(item); controlledItems.append(item)
+            let item = addItem(preset.name, #selector(selectPreset(_:)))
+            item.tag = index
+            item.attributedTitle = swatchTitle(preset)
+            presetItems.append(item); controlledItems.append(item)
         }
-        let custom = NSMenuItem(title: "Eigene Farbe …", action: #selector(showColors), keyEquivalent: "")
-        custom.target = self
-        menu.addItem(custom); controlledItems.append(custom)
-        menu.addItem(.separator())
+        let custom = addItem("Eigene Farbe …", #selector(showColors))
+        customItem = custom; controlledItems.append(custom)
 
-        let effects = NSMenuItem(title: "Sanfte Farbwechsel", action: nil, keyEquivalent: "")
+        let effects = addItem("Sanfte Farbwechsel", nil)
         let effectMenu = NSMenu()
         effectMenu.autoenablesItems = false
-        for (name, value) in [("7 Farben überblenden", 1), ("3 Farben überblenden", 2)] {
-            let item = NSMenuItem(title: name, action: #selector(selectEffect(_:)), keyEquivalent: "")
-            item.target = self; item.tag = value
-            effectMenu.addItem(item); controlledItems.append(item)
+        for effect in LampPresentation.effects {
+            let item = addItem(effect.name, #selector(selectEffect(_:)), to: effectMenu)
+            item.tag = Int(effect.mode)
+            effectItems.append(item); controlledItems.append(item)
         }
         effects.submenu = effectMenu
-        menu.addItem(effects); controlledItems.append(effects)
+        controlledItems.append(effects)
         menu.addItem(.separator())
 
-        let reconnect = NSMenuItem(title: "Erneut verbinden", action: #selector(reconnect), keyEquivalent: "")
-        reconnect.target = self; menu.addItem(reconnect)
-        let disconnect = NSMenuItem(title: "Verbindung freigeben", action: #selector(disconnect), keyEquivalent: "")
-        disconnect.toolTip = "Gibt die Bluetooth-Verbindung für die iPhone-App frei. Die Lampe leuchtet weiter."
-        disconnect.target = self; menu.addItem(disconnect)
+        _ = addItem("Erneut verbinden", #selector(reconnect))
+        let release = addItem("Verbindung freigeben", #selector(disconnect))
+        release.toolTip = "Gibt die Bluetooth-Verbindung für die iPhone-App frei. Die Lampe leuchtet weiter."
         menu.addItem(.separator())
-        let background = NSMenuItem(title: "Fenster und Dock ausblenden", action: #selector(quit), keyEquivalent: "q")
-        background.target = self; menu.addItem(background)
-        let quit = NSMenuItem(title: "Vollständig beenden", action: #selector(quitCompletely), keyEquivalent: "q")
-        quit.keyEquivalentModifierMask = [.command, .option]
-        quit.target = self; menu.addItem(quit)
+        let quit = addItem("Sunset beenden", #selector(quit), key: "q")
+        quit.toolTip = "Beendet Sunset und trennt Bluetooth. Die Lampe behält ihre Einstellung."
     }
 
-    private func swatch(_ r: UInt8, _ g: UInt8, _ b: UInt8) -> NSImage {
-        NSImage(size: NSSize(width: 16, height: 16), flipped: false) { rect in
-            NSColor(srgbRed: CGFloat(r) / 255, green: CGFloat(g) / 255, blue: CGFloat(b) / 255, alpha: 1).setFill()
-            NSBezierPath(ovalIn: rect.insetBy(dx: 2, dy: 2)).fill()
-            return true
-        }
+    // A coloured dot in the title: current macOS menus do not show item images here.
+    private func swatchTitle(_ preset: Preset) -> NSAttributedString {
+        let color = NSColor(srgbRed: CGFloat(preset.red) / 255, green: CGFloat(preset.green) / 255,
+                            blue: CGFloat(preset.blue) / 255, alpha: 1)
+        let title = NSMutableAttributedString(string: "●  ", attributes: [.foregroundColor: color, .font: NSFont.menuFont(ofSize: 0)])
+        title.append(NSAttributedString(string: preset.name, attributes: [.font: NSFont.menuFont(ofSize: 0)]))
+        return title
     }
-
-    func menuWillOpen(_ menu: NSMenu) { refresh() }
 
     private func refresh() {
         guard lamp != nil else { return }
         if !lamp.ready { hasState = false }
-        connectionItem.title = lamp.status
-        powerItem.title = hasState && isOn ? "Ausschalten" : "Einschalten"
-        powerItem.image = NSImage(systemSymbolName: "power", accessibilityDescription: nil)
-        slider.isEnabled = lamp.ready
-        for item in controlledItems { item.isEnabled = lamp.ready }
-        if !slider.isHighlighted { slider.doubleValue = Double(brightness) }
-        brightnessText.stringValue = "Helligkeit  ·  \(brightness) %"
         statusItem.button?.appearsDisabled = !lamp.ready
         statusItem.button?.toolTip = "Sunset · \(lamp.status)"
-        lampWindow?.update(ready: lamp.ready, status: lamp.status, isOn: isOn, hasState: hasState,
-                           red: red, green: green, blue: blue, brightness: brightness, mode: mode)
+        guard !menu.items.isEmpty else { return }   // menu not built yet
+
+        connectionItem?.title = lamp.status
+        powerItem?.title = LampPresentation.powerTitle(hasState: hasState, isOn: isOn)
+        for item in controlledItems { item.isEnabled = lamp.ready }
+        if let slider {
+            slider.isEnabled = lamp.ready
+            if !slider.isHighlighted { slider.doubleValue = Double(brightness) }
+        }
+        brightnessText?.stringValue = LampPresentation.brightnessTitle(brightness)
+        let selection = LampPresentation.selection(hasState: hasState, isOn: isOn, red: red, green: green, blue: blue, mode: mode)
+        for item in presetItems { item.state = selection == .preset(item.tag) ? .on : .off }
+        customItem?.state = selection == .custom ? .on : .off
+        for item in effectItems { item.state = selection == .effect(UInt8(item.tag)) ? .on : .off }
     }
+
+    // MARK: Lamp actions
 
     private func saveSelection() {
         defaults.set([Int(red), Int(green), Int(blue)], forKey: "lastRGB")
@@ -260,23 +211,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func selectPreset(_ sender: NSMenuItem) {
-        choosePreset(sender.tag)
-    }
-
-    private func choosePreset(_ index: Int) {
         delayedSend?.cancel()
-        let preset = presets[index]
-        red = preset.1; green = preset.2; blue = preset.3; mode = 0; speed = 100
+        let preset = presets[sender.tag]
+        red = preset.red; green = preset.green; blue = preset.blue; mode = 0; speed = 100
         applyColor()
     }
 
-    @objc private func changeBrightness() {
-        setBrightness(Int(slider.doubleValue.rounded()))
-    }
-
-    private func setBrightness(_ value: Int) {
-        brightness = max(1, min(100, value))
-        refresh()
+    @objc private func changeBrightness(_ sender: NSSlider) {
+        brightness = max(1, min(100, Int(sender.doubleValue.rounded())))
+        brightnessText?.stringValue = LampPresentation.brightnessTitle(brightness)
         debounceColor()
     }
 
@@ -284,11 +227,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         delayedSend?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.applyColor() }
         delayedSend = work
-        // CoreBluetooth uses the main queue; common run-loop modes keep this responsive while the menu tracks.
+        // One-shot, only while the user drags; the main queue also runs during menu tracking.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
     }
 
     @objc private func showColors() {
+        installEditShortcuts()
         let panel = NSColorPanel.shared
         panel.color = NSColor(srgbRed: CGFloat(red) / 255, green: CGFloat(green) / 255, blue: CGFloat(blue) / 255, alpha: 1)
         panel.showsAlpha = false
@@ -298,6 +242,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         colorPanelOpen = true
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
+    }
+
+    // Invisible for a menu bar app, but it routes ⌘C/⌘V/⌘W to the color panel's fields.
+    private func installEditShortcuts() {
+        guard NSApp.mainMenu == nil else { return }
+        let main = NSMenu(), holder = NSMenuItem(), edit = NSMenu(title: "Bearbeiten")
+        edit.addItem(withTitle: "Ausschneiden", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: "Kopieren", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "Einsetzen", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: "Alles auswählen", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        edit.addItem(withTitle: "Schließen", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        holder.submenu = edit
+        main.addItem(holder)
+        NSApp.mainMenu = main
     }
 
     @objc private func pickColor(_ sender: NSColorPanel) {
@@ -316,12 +274,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func receive(_ bytes: [UInt8]) {
+        guard let state = LampPresentation.decodeState(bytes) else { return }
         hasState = true
-        isOn = bytes[10] > 0 && (bytes[6] > 0 || bytes[7] > 0 || bytes[8] > 0 || bytes[9] > 0)
-        if isOn {
-            red = bytes[7]; green = bytes[8]; blue = bytes[9]
-            brightness = max(1, min(100, Int(bytes[10])))
-            mode = bytes[6]; speed = max(1, min(100, Int(bytes[11])))
+        isOn = state.isOn
+        if state.isOn {
+            red = state.red; green = state.green; blue = state.blue
+            brightness = state.brightness; mode = state.mode; speed = state.speed
             saveSelection()
         }
         refresh()
@@ -334,33 +292,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     @objc private func disconnect() { delayedSend?.cancel(); lamp.stop() }
     @objc private func quit() { NSApp.terminate(nil) }
-
-    @objc private func quitCompletely() {
-        explicitQuit = true
-        NSApp.terminate(nil)
-    }
-
-    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        let event = NSAppleEventManager.shared().currentAppleEvent
-        let reason = (event?.attributeDescriptor(forKeyword: AEKeyword(kAEQuitReason))
-                      ?? event?.paramDescriptor(forKeyword: AEKeyword(kAEQuitReason)))?.enumCodeValue
-        if TerminationPolicy.shouldTerminate(explicitQuit: explicitQuit, systemReason: reason) {
-            return .terminateNow
-        }
-        for window in sender.windows { window.orderOut(nil) }
-        sender.hide(nil)
-        sender.setActivationPolicy(.accessory)
-        lamp.log("Background mode: window hidden; accessory=\(sender.activationPolicy() == .accessory); Bluetooth remains active")
-        return .terminateCancel
-    }
-    func applicationWillTerminate(_ notification: Notification) {
-        delayedSend?.cancel(); lamp.stop()
-        if colorPanelOpen { NSColorPanel.shared.close() }
-    }
 }
 
 let app = NSApplication.shared
-app.setActivationPolicy(.regular)
+app.setActivationPolicy(.accessory)
 let delegate = AppDelegate()
 app.delegate = delegate
 app.run()
